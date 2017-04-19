@@ -6,5 +6,5 @@
 class VolumeBinningEstimator
 {
 public:
-	static void estimateBinnedVolume(Volume&,const float4* samples_device, int nsamples);
+	static void estimateBinnedVolume(Volume&,const float4* samples_device, int nsamples, bool linear = false);
 };

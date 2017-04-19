@@ -213,43 +213,66 @@ void KernelDensityEstimationCUDA::estimateAccurate(Volume& volume, const float4*
 	chkCudaErrors(cudaGetLastError());
 }
 
-//__constant__ float cellVolume;
+
+
 
 __global__ void buildBins3d(const float4* __restrict__ samples, GPUVolumeData volume, const int nsamples)
 {
 	int idx = blockIdx.x*blockDim.x + threadIdx.x;
 	if (idx >= nsamples) return;
-	float3 grid_pos = (make_float3(samples[idx]) - make_float3(volume.BB_.lower)) / make_float3(volume.cellSize_);
+	float3 grid_pos = (make_float3(samples[idx]) - make_float3(volume.BB_.lower)) / make_float3(volume.cellSize_) - 0.5f;
 	float3 grid_idx_f = floorf(grid_pos);
 	int3 grid_idx = make_int3(grid_idx_f.x, grid_idx_f.y, grid_idx_f.z);
 	grid_idx -= make_int3(grid_idx.x == volume.width_, grid_idx.y == volume.height_, grid_idx.z == volume.depth_);
 
 	atomicAdd(&volume(grid_idx.x, grid_idx.y, grid_idx.z), 1.0f);
+}
+
+
+__global__ void buildLinearBins3d(const float4* __restrict__ samples, GPUVolumeData volume, const int nsamples)
+{
+	int idx = blockIdx.x*blockDim.x + threadIdx.x;
+	if (idx >= nsamples) return;
+	float3 grid_pos = (make_float3(samples[idx]) - make_float3(volume.BB_.lower)) / make_float3(volume.cellSize_)-0.5f;
 	
-	////0,0,0
-	//register float temp = (grid_idx_f.x + 1.0f - grid_pos.x)*(grid_idx_f.y + 1.0f - grid_pos.y)*(grid_idx_f.z + 1.0f - grid_pos.z)/cellVolume;	
-	//atomicAdd(&volume(grid_idx.x, grid_idx.y, grid_idx.z), temp);
-	////1,0,0
-	//temp = (-grid_idx_f.x + grid_pos.x)*(grid_idx_f.y + 1.0f - grid_pos.y)*(grid_idx_f.z + 1.0f - grid_pos.z) / cellVolume;
-	//atomicAdd(&volume(grid_idx.x+1, grid_idx.y, grid_idx.z), temp);
-	////0,1,0
-	//temp = (grid_idx_f.x + 1.0f - grid_pos.x)*(-grid_idx_f.y + grid_pos.y)*(grid_idx_f.z + 1.0f - grid_pos.z) / cellVolume;
-	//atomicAdd(&volume(grid_idx.x , grid_idx.y+1, grid_idx.z), temp);
-	////1,1,0
-	//temp = (-grid_idx_f.x + grid_pos.x)*(-grid_idx_f.y + grid_pos.y)*(grid_idx_f.z + 1.0f - grid_pos.z) / cellVolume;
-	//atomicAdd(&volume(grid_idx.x + 1, grid_idx.y + 1, grid_idx.z), temp);
-	////0,0,1
-	//temp = (grid_idx_f.x + 1.0f - grid_pos.x)*(grid_idx_f.y + 1.0f - grid_pos.y)*(-grid_idx_f.z + grid_pos.z) / cellVolume;
-	//atomicAdd(&volume(grid_idx.x, grid_idx.y, grid_idx.z + 1), temp);
-	////1,0,1
-	//temp = (-grid_idx_f.x + grid_pos.x)*(grid_idx_f.y + 1.0f - grid_pos.y)*(-grid_idx_f.z + grid_pos.z) / cellVolume;
-	//atomicAdd(&volume(grid_idx.x + 1, grid_idx.y, grid_idx.z+1), temp);
-	////0,1,1
-	//temp = (grid_idx_f.x + 1.0f - grid_pos.x)*(-grid_idx_f.y + grid_pos.y)*(-grid_idx_f.z + grid_pos.z) / cellVolume;
-	//atomicAdd(&volume(grid_idx.x, grid_idx.y + 1, grid_idx.z+1), temp);
-	////1,1,1
-	//temp = (-grid_idx_f.x + grid_pos.x)*(-grid_idx_f.y + grid_pos.y)*(grid_idx_f.z + grid_pos.z) / cellVolume;
-	//atomicAdd(&volume(grid_idx.x + 1, grid_idx.y + 1, grid_idx.z + 1), temp);
+	//grid_idx -= make_int3(grid_idx.x == volume.width_, grid_idx.y == volume.height_, grid_idx.z == volume.depth_);
+	if (grid_pos.x < 0.0f) grid_pos.x = 0.0f;
+	if (grid_pos.y < 0.0f) grid_pos.y = 0.0f;
+	if (grid_pos.z < 0.0f) grid_pos.z = 0.0f;
+
+	if (grid_pos.x > (volume.width_-1))  grid_pos.x = volume.width_ -1.0f;
+	if (grid_pos.y > (volume.height_-1)) grid_pos.y = volume.height_ -1.0f;
+	if (grid_pos.z > (volume.depth_-1))  grid_pos.z = volume.depth_ -1.0f;
+
+
+	float3 grid_idx_f = floorf(grid_pos);
+	int3 grid_idx = make_int3(grid_idx_f.x, grid_idx_f.y, grid_idx_f.z);
+	
+	float3 grid_alpha = grid_pos - make_float3(grid_idx.x, grid_idx.y, grid_idx.z);
+	//0,0,0
+	register float temp = (1.0f - grid_alpha.x)*(1.0f - grid_alpha.y)*(1.0f - grid_alpha.z);
+	atomicAdd(&volume(grid_idx.x, grid_idx.y, grid_idx.z), temp);
+	//1,0,0
+	temp = (grid_alpha.x)*(1.0f - grid_alpha.y)*(1.0f - grid_alpha.z);
+	atomicAdd(&volume(grid_idx.x+1, grid_idx.y, grid_idx.z), temp);
+	//0,1,0
+	temp = (1.0f - grid_alpha.x)*(grid_alpha.y)*(1.0f - grid_alpha.z);
+	atomicAdd(&volume(grid_idx.x , grid_idx.y+1, grid_idx.z), temp);
+	//1,1,0
+	temp = (grid_alpha.x)*(grid_alpha.y)*(1.0f - grid_alpha.z);
+	atomicAdd(&volume(grid_idx.x + 1, grid_idx.y + 1, grid_idx.z), temp);
+	//0,0,1
+	temp = (1.0f - grid_alpha.x)*(1.0f - grid_alpha.y)*(grid_alpha.z);
+	atomicAdd(&volume(grid_idx.x, grid_idx.y, grid_idx.z + 1), temp);
+	//1,0,1
+	temp = (grid_alpha.x)*(1.0f - grid_alpha.y)*(grid_alpha.z);
+	atomicAdd(&volume(grid_idx.x + 1, grid_idx.y, grid_idx.z+1), temp);
+	//0,1,1
+	temp = (1.0f - grid_alpha.x)*(grid_alpha.y)*(grid_alpha.z);
+	atomicAdd(&volume(grid_idx.x, grid_idx.y + 1, grid_idx.z+1), temp);
+	//1,1,1
+	temp = (grid_alpha.x)*(grid_alpha.y)*(grid_alpha.z);
+	atomicAdd(&volume(grid_idx.x + 1, grid_idx.y + 1, grid_idx.z + 1), temp);
 
 }
 
@@ -282,14 +305,16 @@ __global__ void filterInFreqDomain(cuFloatComplex* __restrict__ Fdata, const cuF
 
 #include "VolumeBinning.h"
 
-void VolumeBinningEstimator::estimateBinnedVolume(Volume& volume, const float4* samples_device, int nsamples)
+void VolumeBinningEstimator::estimateBinnedVolume(Volume& volume, const float4* samples_device, int nsamples,bool linear/*=false*/)
 {
-
 	int launch_block_size = 512;
 	int launch_grid_size = (nsamples + launch_block_size - 1) / launch_block_size;
 
 	GPUVolumeData volData = volume.getVolumeData();
-	buildBins3d << <launch_grid_size, launch_block_size >> > (samples_device, volData, nsamples);
+	if (linear)
+		buildLinearBins3d <<<launch_grid_size, launch_block_size >>> (samples_device, volData, nsamples);
+	else 
+		buildBins3d <<<launch_grid_size, launch_block_size >>> (samples_device, volData, nsamples);
 	cudaDeviceSynchronize();
 	chkCudaErrors(cudaGetLastError());
 }
@@ -309,8 +334,9 @@ void KernelDensityEstimationCUDA::estimateBinned(Volume& volume, const KernelBan
 	GPUVolumeData volData = volume.getVolumeData();
 
 	float3 L_f = make_float3((3.7f*sqrtf(kernelBandwidth.getLargestEigenValue())))/volume.cellSize();
-	int3 L = make_int3(ceilf(L_f.x), ceilf(L_f.y), ceilf(L_f.z));
-	
+	L_f = make_float3(ceilf(L_f.x), ceilf(L_f.y), ceilf(L_f.z));
+	int3 L = make_int3(L_f.x, L_f.y, L_f.z);
+
 	int3 P = make_int3(powf(2.0f, ceilf(log2f(L_f.x*2.0f + 1.0f + volData.width_))), powf(2.0f, ceilf(log2f(L_f.y*2.0f + 1.0f + volData.height_))), powf(2.0f, ceilf(log2f(L_f.z*2.0f + 1.0f + volData.depth_))));
 
 	thrust::device_vector<float> Czp(P.x*P.y*P.z);
@@ -457,7 +483,8 @@ float FFTLSCVEstimatorCUDA::estimateLSCV(Volume& binned_volume,int nsamples,cons
 {
 	GPUVolumeData volData = binned_volume.getVolumeData();
 	float3 L_f = make_float3((3.7f*sqrtf(kernelBandwidth.getLargestEigenValue()))) / binned_volume.cellSize()* 2.0;
-	int3 L = make_int3(ceilf(L_f.x), ceilf(L_f.y), ceilf(L_f.z));
+	L_f = make_float3(ceilf(L_f.x), ceilf(L_f.y), ceilf(L_f.z));
+	int3 L = make_int3(L_f.x, L_f.y, L_f.z);
 	
 	int3 P = make_int3(powf(2.0f, ceilf(log2f(L_f.x*2.0f + 1.0f + volData.width_))), powf(2.0f, ceilf(log2f(L_f.y*2.0f + 1.0f + volData.height_))), powf(2.0f, ceilf(log2f(L_f.z*2.0f + 1.0f + volData.depth_))));
 
@@ -468,7 +495,7 @@ float FFTLSCVEstimatorCUDA::estimateLSCV(Volume& binned_volume,int nsamples,cons
 		myParms.srcPtr = binned_volume.getVolumeData().pitchedDevPtr;
 		myParms.dstPtr = make_cudaPitchedPtr(thrust::raw_pointer_cast(Czp.data()), P.x * sizeof(float), P.x * sizeof(float), P.y);
 		myParms.extent = make_cudaExtent(volData.width_ * sizeof(float), volData.height_, volData.depth_);
-		myParms.dstPos = make_cudaPos((L.x) * sizeof(float), L.y, L.z);
+		myParms.dstPos = make_cudaPos(L.x * sizeof(float), L.y, L.z);
 		myParms.kind = cudaMemcpyDeviceToDevice;
 
 		chkCudaErrors(cudaMemcpy3D(&myParms));
@@ -527,7 +554,7 @@ float FFTLSCVEstimatorCUDA::estimateLSCV(Volume& binned_volume,int nsamples,cons
 
 	chkCudaErrors(cufftExecC2R(inversePlan, thrust::raw_pointer_cast(FCzp.data()), thrust::raw_pointer_cast(Czp.data())));
 
-    thrust::device_vector<float> dev_debug(volData.width_ *  volData.height_* volData.depth_);
+    //thrust::device_vector<float> dev_debug(volData.width_ *  volData.height_* volData.depth_);
 	//{
 	//	cudaMemcpy3DParms myParms = { 0 };
 	//	myParms.dstPtr = make_cudaPitchedPtr(thrust::raw_pointer_cast(dev_debug.data()), volData.width_ * sizeof(float), volData.width_ * sizeof(float), volData.height_);
@@ -575,11 +602,11 @@ float FFTLSCVEstimatorCUDA::estimateLSCV(Volume& binned_volume,int nsamples,cons
 	//		for (int j = 0; j<P.y; ++j)
 	//			for (int i = 0; i < P.x; ++i)
 	//			{
-	//				float3 cellPos = (make_float3(float(i) + 0.5f, float(j) + 0.5f, float(k) + 0.5f)-make_float3((L.x)*2.0f,(L.y)*2.0f,(L.z)*2.0f))*make_float3(volData.cellSize_) + make_float3(volData.minBB_);
+	//				float3 cellPos = (make_float3(float(i) + 0.5f, float(j) + 0.5f, float(k) + 0.5f)-make_float3((L.x)*2.0f-2.0,(L.y)*2.0f-2.0,(L.z)*2.0f-2.0))*make_float3(volData.cellSize_) + make_float3(volData.BB_.lower);
 	//				printf("%g,%g,%g,%g\n", cellPos.x, cellPos.y, cellPos.z, debug[idx]);
 	//				++idx;
 	//			}
-	//
+	
 		thrust::transform(pIt, pIt + volData.width_*volData.height_*volData.depth_, volDataIt, pIt, thrust::placeholders::_1*thrust::placeholders::_2);
 		register float temp = thrust::reduce(pIt, pIt + volData.width_*volData.height_*volData.depth_, 0.0f);
 		

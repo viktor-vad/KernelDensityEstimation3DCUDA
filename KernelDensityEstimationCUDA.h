@@ -7,7 +7,7 @@
 #include <thrust/device_vector.h>
 
 class Volume;
-#include "KernelBandwidth.h";
+#include "KernelBandwidth.h"
 
 class KernelDensityEstimationCUDA
 {

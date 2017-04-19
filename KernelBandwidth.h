@@ -23,15 +23,18 @@ public:
 	void getCoeffs(float& H_inv_11, float& H_inv_12, float& H_inv_13, float& H_inv_22, float& H_inv_23, float& H_inv_33) const;
 	const SymmetricMatrix& getInverseMatrix() const;
 	const SymmetricMatrix& getMatrix() const;
-	SymmetricMatrix& getMatrixDataRef();
+	const float* getMatrixDataPtr() const;
 	float getDeterminant() const;
 	float getLargestEigenValue() const;
+	float getMiddleEigenValue() const;
 	float getSmallestEigenValue() const;
-	void checkAndCorrectPositiveDefiniteness();
+	//void checkAndCorrectPositiveDefiniteness();
 private:
 	SymmetricMatrix H;
 	SymmetricMatrix H_inv;
 
 	float detH;
+
+	float eig1, eig2, eig3;
 };
 
