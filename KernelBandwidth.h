@@ -28,7 +28,12 @@ public:
 	float getLargestEigenValue() const;
 	float getMiddleEigenValue() const;
 	float getSmallestEigenValue() const;
-	//void checkAndCorrectPositiveDefiniteness();
+
+	void getEigenSystem(float& e1, float& e2, float& e3, float3& ev1, float3& ev2, float3& ev3) const;
+	void setFromEigenSystem(const float& e1, const float& e2, const float& e3, const float3& ev1, const float3& ev2, const float3& ev3);
+	void getRotationOfEigenSystem(float& rot_x, float& rot_y, float& rot_z) const;
+	void setFromEigenSystem(const float& e1, const float& e2, const float& e3, const float& rot_x, const float& rot_y, const float& rot_z);
+	bool isPositiveDefinite() const;
 private:
 	SymmetricMatrix H;
 	SymmetricMatrix H_inv;
@@ -36,5 +41,7 @@ private:
 	float detH;
 
 	float eig1, eig2, eig3;
+	//float3 eigv1, eigv2, eigv3;
+	void computeEigenVectors(float3& eigv1, float3& eigv2, float3& eigv3) const;
 };
 

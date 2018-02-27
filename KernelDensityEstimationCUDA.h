@@ -8,8 +8,9 @@
 
 class Volume;
 #include "KernelBandwidth.h"
+#include "FFTKDEEstimationBaseCUDA.h"
 
-class KernelDensityEstimationCUDA
+class KernelDensityEstimationCUDA:public FFTKDEEstimationBaseCUDA
 {
 public:
 	KernelDensityEstimationCUDA();
@@ -21,6 +22,5 @@ public:
 	void estimateAccurate(Volume&, const float4* samples_device,int nsamples, const KernelBandwidth& kernelBandwidth = KernelBandwidth());
 	void estimateBinned(Volume& volume, const float4* samples_device, int nsamples, const KernelBandwidth& kernelBandwidth = KernelBandwidth());
 	void estimateBinned(Volume& binned_volume, const KernelBandwidth& kernelBandwidth = KernelBandwidth());
-private:
 
 };

@@ -9,13 +9,7 @@
 #include <thrust/sort.h>
 
 #include <memory>
-
-
-KernelDensityEstimationCUDA::KernelDensityEstimationCUDA()
-
-{
-
-}
+#include <algorithm>
 
 __constant__ float4 hashCellSize;
 __constant__ uint4 hashGridSize;
@@ -89,25 +83,7 @@ __global__ void fillHashLookupTable(const HashSampleIdxStruct* __restrict__ hash
 	if (idx == 0 || hashSampleIdx[idx - 1].hash != hashSampleIdx[idx].hash) hashStartIdx[hashSampleIdx[idx].hash] = idx;
 }
 
-__constant__ SymmetricMatrix H_inv;
-
-__constant__ float kernel_normalizing_constant;
-
-__device__ float GaussianKernel(float4 pos,float4 sample)
-{
-	register float3 pms = (make_float3(pos) - make_float3(sample))/sample.w;
-	register float3 tmp = H_inv.mult(pms);
-	
-	return kernel_normalizing_constant/(sample.w*sample.w*sample.w)*exp(-0.5f*dot(pms,tmp));
-}
-
-__device__ float GaussianKernel(float3 pos, float3 sample)
-{
-	register float3 pms = pos - sample;
-	register float3 tmp = H_inv.mult(pms);
-
-	return kernel_normalizing_constant * exp(-0.5f*dot(pms, tmp));
-}
+#include "GaussianKernel.cuh"
 
 __global__ void estimateKDEAccurateWithSpatialHash_kernel(const float4* __restrict__ samples, const int nsamples, const HashSampleIdxStruct* __restrict__ hashSampleIdxVec,const int* __restrict__ hashStartIdx/*,Volume volume*/
 	, GPUVolumeData volume
@@ -215,68 +191,8 @@ void KernelDensityEstimationCUDA::estimateAccurate(Volume& volume, const float4*
 
 
 
-
-__global__ void buildBins3d(const float4* __restrict__ samples, GPUVolumeData volume, const int nsamples)
-{
-	int idx = blockIdx.x*blockDim.x + threadIdx.x;
-	if (idx >= nsamples) return;
-	float3 grid_pos = (make_float3(samples[idx]) - make_float3(volume.BB_.lower)) / make_float3(volume.cellSize_) - 0.5f;
-	float3 grid_idx_f = floorf(grid_pos);
-	int3 grid_idx = make_int3(grid_idx_f.x, grid_idx_f.y, grid_idx_f.z);
-	grid_idx -= make_int3(grid_idx.x == volume.width_, grid_idx.y == volume.height_, grid_idx.z == volume.depth_);
-
-	atomicAdd(&volume(grid_idx.x, grid_idx.y, grid_idx.z), 1.0f);
-}
-
-
-__global__ void buildLinearBins3d(const float4* __restrict__ samples, GPUVolumeData volume, const int nsamples)
-{
-	int idx = blockIdx.x*blockDim.x + threadIdx.x;
-	if (idx >= nsamples) return;
-	float3 grid_pos = (make_float3(samples[idx]) - make_float3(volume.BB_.lower)) / make_float3(volume.cellSize_)-0.5f;
-	
-	//grid_idx -= make_int3(grid_idx.x == volume.width_, grid_idx.y == volume.height_, grid_idx.z == volume.depth_);
-	if (grid_pos.x < 0.0f) grid_pos.x = 0.0f;
-	if (grid_pos.y < 0.0f) grid_pos.y = 0.0f;
-	if (grid_pos.z < 0.0f) grid_pos.z = 0.0f;
-
-	if (grid_pos.x > (volume.width_-1))  grid_pos.x = volume.width_ -1.0f;
-	if (grid_pos.y > (volume.height_-1)) grid_pos.y = volume.height_ -1.0f;
-	if (grid_pos.z > (volume.depth_-1))  grid_pos.z = volume.depth_ -1.0f;
-
-
-	float3 grid_idx_f = floorf(grid_pos);
-	int3 grid_idx = make_int3(grid_idx_f.x, grid_idx_f.y, grid_idx_f.z);
-	
-	float3 grid_alpha = grid_pos - make_float3(grid_idx.x, grid_idx.y, grid_idx.z);
-	//0,0,0
-	register float temp = (1.0f - grid_alpha.x)*(1.0f - grid_alpha.y)*(1.0f - grid_alpha.z);
-	atomicAdd(&volume(grid_idx.x, grid_idx.y, grid_idx.z), temp);
-	//1,0,0
-	temp = (grid_alpha.x)*(1.0f - grid_alpha.y)*(1.0f - grid_alpha.z);
-	atomicAdd(&volume(grid_idx.x+1, grid_idx.y, grid_idx.z), temp);
-	//0,1,0
-	temp = (1.0f - grid_alpha.x)*(grid_alpha.y)*(1.0f - grid_alpha.z);
-	atomicAdd(&volume(grid_idx.x , grid_idx.y+1, grid_idx.z), temp);
-	//1,1,0
-	temp = (grid_alpha.x)*(grid_alpha.y)*(1.0f - grid_alpha.z);
-	atomicAdd(&volume(grid_idx.x + 1, grid_idx.y + 1, grid_idx.z), temp);
-	//0,0,1
-	temp = (1.0f - grid_alpha.x)*(1.0f - grid_alpha.y)*(grid_alpha.z);
-	atomicAdd(&volume(grid_idx.x, grid_idx.y, grid_idx.z + 1), temp);
-	//1,0,1
-	temp = (grid_alpha.x)*(1.0f - grid_alpha.y)*(grid_alpha.z);
-	atomicAdd(&volume(grid_idx.x + 1, grid_idx.y, grid_idx.z+1), temp);
-	//0,1,1
-	temp = (1.0f - grid_alpha.x)*(grid_alpha.y)*(grid_alpha.z);
-	atomicAdd(&volume(grid_idx.x, grid_idx.y + 1, grid_idx.z+1), temp);
-	//1,1,1
-	temp = (grid_alpha.x)*(grid_alpha.y)*(grid_alpha.z);
-	atomicAdd(&volume(grid_idx.x + 1, grid_idx.y + 1, grid_idx.z + 1), temp);
-
-}
-
-__global__ void fillKernelFilter(GPUVolumeData kernelFilterData)
+template <class Kernel>
+__global__ void fillKernelFilter(GPUVolumeData kernelFilterData,Kernel kernel)
 {
 	int idx = blockIdx.x*blockDim.x + threadIdx.x;
 	uint3 gridSize = kernelFilterData.gridSize();
@@ -288,7 +204,7 @@ __global__ void fillKernelFilter(GPUVolumeData kernelFilterData)
 
 	float3 pos = make_float3(kernelFilterData.cellCenter(idx_x, idx_y, idx_z));
 
-	kernelFilterData(idx_x, idx_y, idx_z) = GaussianKernel(pos, make_float3(0.0f));
+	kernelFilterData(idx_x, idx_y, idx_z) = kernel(pos);
 
 }
 
@@ -304,19 +220,11 @@ __global__ void filterInFreqDomain(cuFloatComplex* __restrict__ Fdata, const cuF
 
 
 #include "VolumeBinning.h"
+#include "VolumeBinning.cuh"
 
-void VolumeBinningEstimator::estimateBinnedVolume(Volume& volume, const float4* samples_device, int nsamples,bool linear/*=false*/)
+void VolumeBinningEstimator::estimateBinnedVolume(Volume& volume, const float4* __restrict__ samples_device, int nsamples, bool linear/*=false*/)
 {
-	int launch_block_size = 512;
-	int launch_grid_size = (nsamples + launch_block_size - 1) / launch_block_size;
-
-	GPUVolumeData volData = volume.getVolumeData();
-	if (linear)
-		buildLinearBins3d <<<launch_grid_size, launch_block_size >>> (samples_device, volData, nsamples);
-	else 
-		buildBins3d <<<launch_grid_size, launch_block_size >>> (samples_device, volData, nsamples);
-	cudaDeviceSynchronize();
-	chkCudaErrors(cudaGetLastError());
+	estimateBinnedVolumeFromIterator<const float4*>(volume, samples_device, nsamples, linear);
 }
 
 void KernelDensityEstimationCUDA::estimateBinned(Volume& volume, const float4* samples_device, int nsamples, const KernelBandwidth& kernelBandwidth)
@@ -327,24 +235,21 @@ void KernelDensityEstimationCUDA::estimateBinned(Volume& volume, const float4* s
 }
 
 #include <cufft.h>
+#include "FFTKDECUDAMemoryManager.h"
+#include "FFTKDEEstimationBaseCUDA.h"
 
-
-void KernelDensityEstimationCUDA::estimateBinned(Volume& volume, const KernelBandwidth& kernelBandwidth)
+template <class KernelFiller>
+void FFTKDEEstimationBaseCUDA::estimateBinnedBase(GPUVolumeData& volData, int3& L, int3& P, const KernelBandwidth& kernelBandwidth)
 {
-	GPUVolumeData volData = volume.getVolumeData();
+	unsigned int grid_element_num = P.x*P.y*P.z;
+	//thrust::device_vector<float> Czp(P.x*P.y*P.z);
+	memoryManager->allocate(P);
 
-	float3 L_f = make_float3((3.7f*sqrtf(kernelBandwidth.getLargestEigenValue())))/volume.cellSize();
-	L_f = make_float3(ceilf(L_f.x), ceilf(L_f.y), ceilf(L_f.z));
-	int3 L = make_int3(L_f.x, L_f.y, L_f.z);
-
-	int3 P = make_int3(powf(2.0f, ceilf(log2f(L_f.x*2.0f + 1.0f + volData.width_))), powf(2.0f, ceilf(log2f(L_f.y*2.0f + 1.0f + volData.height_))), powf(2.0f, ceilf(log2f(L_f.z*2.0f + 1.0f + volData.depth_))));
-
-	thrust::device_vector<float> Czp(P.x*P.y*P.z);
-	chkCudaErrors(cudaMemset(thrust::raw_pointer_cast(Czp.data()), 0, P.x*P.y*P.z * sizeof(float)));
+	chkCudaErrors(cudaMemset(memoryManager->Czp_data(), 0, grid_element_num * sizeof(float)));
 	{
 		cudaMemcpy3DParms myParms = { 0 };
-		myParms.srcPtr = volume.getVolumeData().pitchedDevPtr;
-		myParms.dstPtr = make_cudaPitchedPtr(thrust::raw_pointer_cast(Czp.data()), P.x * sizeof(float), P.x * sizeof(float), P.y);
+		myParms.srcPtr = volData.pitchedDevPtr;
+		myParms.dstPtr = make_cudaPitchedPtr(thrust::raw_pointer_cast(memoryManager->Czp_data()), P.x * sizeof(float), P.x * sizeof(float), P.y);
 		myParms.extent = make_cudaExtent(volData.width_ * sizeof(float), volData.height_, volData.depth_);
 		myParms.dstPos = make_cudaPos((L.x) * sizeof(float), L.y, L.z);
 		myParms.kind = cudaMemcpyDeviceToDevice;
@@ -352,11 +257,11 @@ void KernelDensityEstimationCUDA::estimateBinned(Volume& volume, const KernelBan
 		chkCudaErrors(cudaMemcpy3D(&myParms));
 	}
 
-	thrust::device_vector<float> Kzp(P.x*P.y*P.z);
-	chkCudaErrors(cudaMemset(thrust::raw_pointer_cast(Kzp.data()), 0, P.x*P.y*P.z * sizeof(float)));
+	//thrust::device_vector<float> Kzp(P.x*P.y*P.z);
+	chkCudaErrors(cudaMemset(memoryManager->Kzp_data(), 0, grid_element_num * sizeof(float)));
 
 	GPUVolumeData kernelFilterData;
-	kernelFilterData.pitchedDevPtr= make_cudaPitchedPtr(thrust::raw_pointer_cast(Kzp.data()), P.x * sizeof(float), P.x * sizeof(float), P.y);
+	kernelFilterData.pitchedDevPtr = make_cudaPitchedPtr(memoryManager->Kzp_data(), P.x * sizeof(float), P.x * sizeof(float), P.y);
 	kernelFilterData.width_ = (2 * L.x + 1);
 	kernelFilterData.height_ = (2 * L.y + 1);
 	kernelFilterData.depth_ = (2 * L.z + 1);
@@ -368,46 +273,88 @@ void KernelDensityEstimationCUDA::estimateBinned(Volume& volume, const KernelBan
 
 	chkCudaErrors(cudaMemcpyToSymbol(H_inv, &H_inv_, sizeof(SymmetricMatrix)));
 
-	float kernel_normalizing_constant_ = 0.0634936359342409 //1/(2 pi)^(3/2)
+	kernel_normalizing_constant_ = 0.0634936359342409 //1/(2 pi)^(3/2)
 		/ (sqrtf(kernelBandwidth.getDeterminant()));
 	chkCudaErrors(cudaMemcpyToSymbol(kernel_normalizing_constant, &kernel_normalizing_constant_, sizeof(float)));
 
 	int launch_block_size = 512;
 	int launch_grid_size = (kernelFilterData.width_*kernelFilterData.height_*kernelFilterData.depth_ + launch_block_size - 1) / launch_block_size;
 
-	fillKernelFilter <<<launch_grid_size, launch_block_size >>> (kernelFilterData);
+	fillKernelFilter<KernelFiller> <<<launch_grid_size, launch_block_size >>> (kernelFilterData, KernelFiller());
 	cudaDeviceSynchronize();
 	chkCudaErrors(cudaGetLastError());
 
-	
+
 
 	cufftHandle forwardPlan, inversePlan;
-	chkCudaErrors(cufftPlan3d(&forwardPlan, P.z, P.y, P.x, cufftType::CUFFT_R2C));
-	chkCudaErrors(cufftPlan3d(&inversePlan, P.z, P.y, P.x, cufftType::CUFFT_C2R));
+	chkCudaErrors(cufftCreate(&forwardPlan));
+	chkCudaErrors(cufftCreate(&inversePlan));
+	chkCudaErrors(cufftSetAutoAllocation(forwardPlan,false));
+	chkCudaErrors(cufftSetAutoAllocation(inversePlan, false));
 
-	thrust::device_vector<cuFloatComplex> FCzp((P.x / 2 + 1)*P.y*P.z);
-	thrust::device_vector<cuFloatComplex> FKzp((P.x / 2 + 1)*P.y*P.z);
+	size_t fftWorkAreaForward = 0;
+	size_t fftWorkAreaInverse = 0;
+	
+	chkCudaErrors(cufftMakePlan3d(forwardPlan, P.z, P.y, P.x, cufftType::CUFFT_R2C, &fftWorkAreaForward));	
+	chkCudaErrors(cufftMakePlan3d(inversePlan, P.z, P.y, P.x, cufftType::CUFFT_C2R, &fftWorkAreaInverse));
 
-	chkCudaErrors(cufftExecR2C(forwardPlan, thrust::raw_pointer_cast(Czp.data()), thrust::raw_pointer_cast(FCzp.data())));
-	chkCudaErrors(cufftExecR2C(forwardPlan, thrust::raw_pointer_cast(Kzp.data()), thrust::raw_pointer_cast(FKzp.data())));
+	memoryManager->allocateFFTWorkArea(std::max<std::size_t>( fftWorkAreaForward,fftWorkAreaInverse) );
+	chkCudaErrors(cufftSetWorkArea(forwardPlan, memoryManager->fftWorkArea()));
+	chkCudaErrors(cufftSetWorkArea(inversePlan, memoryManager->fftWorkArea()));
+
+	//thrust::device_vector<cuFloatComplex> FCzp((P.x / 2 + 1)*P.y*P.z);
+	//thrust::device_vector<cuFloatComplex> FKzp((P.x / 2 + 1)*P.y*P.z);
+
+	chkCudaErrors(cufftExecR2C(forwardPlan, memoryManager->Czp_data(), memoryManager->FCzp_data()));
+	chkCudaErrors(cufftExecR2C(forwardPlan, memoryManager->Kzp_data(), memoryManager->FKzp_data()));
 
 	launch_block_size = 512;
-	launch_grid_size = (FCzp.size() + launch_block_size - 1) / launch_block_size;
+	launch_grid_size = (grid_element_num + launch_block_size - 1) / launch_block_size;
 
-	float fftScaleFactor_ = 1.0f / ((P.x*P.y*P.z)/*(P.x*P.y*P.z)*/);
+	float fftScaleFactor_ = 1.0f / ((grid_element_num));
 	chkCudaErrors(cudaMemcpyToSymbol(fftScaleFactor, &fftScaleFactor_, sizeof(float)));
 
-	filterInFreqDomain <<< launch_grid_size, launch_block_size >>> (thrust::raw_pointer_cast(FCzp.data()), thrust::raw_pointer_cast(FKzp.data()), FCzp.size());
+	filterInFreqDomain <<< launch_grid_size, launch_block_size >>> (memoryManager->FCzp_data(), memoryManager->FKzp_data(), grid_element_num);
 
 	cudaDeviceSynchronize();
-	chkCudaErrors(cudaGetLastError());
+	chkCudaErrors(cudaGetLastError());	
+	
+	chkCudaErrors(cufftDestroy(forwardPlan));
 
-	chkCudaErrors(cufftExecC2R(inversePlan, thrust::raw_pointer_cast(FCzp.data()), thrust::raw_pointer_cast(Czp.data())));
+	//chkCudaErrors(cufftPlan3d(&inversePlan, P.z, P.y, P.x, cufftType::CUFFT_C2R));
+	chkCudaErrors(cufftExecC2R(inversePlan, memoryManager->FCzp_data(), memoryManager->Czp_data()));
+	
+
+	chkCudaErrors(cufftDestroy(inversePlan));
+}
+
+
+
+struct GaussianKernelFiller
+{
+	__device__ float operator()(float3 pos)
+	{
+		return GaussianKernel(pos, make_float3(0.0f));
+	}
+};
+
+
+void KernelDensityEstimationCUDA::estimateBinned(Volume& volume, const KernelBandwidth& kernelBandwidth)
+{
+	GPUVolumeData volData = volume.getVolumeData();
+
+	float3 L_f = make_float3((3.7f*sqrtf(kernelBandwidth.getLargestEigenValue()))) / volume.cellSize();
+	L_f = make_float3(ceilf(L_f.x), ceilf(L_f.y), ceilf(L_f.z));
+	int3 L = make_int3(L_f.x, L_f.y, L_f.z);
+
+	int3 P = make_int3(powf(2.0f, ceilf(log2f(L_f.x*2.0f + 1.0f + volData.width_))), powf(2.0f, ceilf(log2f(L_f.y*2.0f + 1.0f + volData.height_))), powf(2.0f, ceilf(log2f(L_f.z*2.0f + 1.0f + volData.depth_))));
+
+	estimateBinnedBase<GaussianKernelFiller>(volData,L,P, kernelBandwidth);
 
 	{
 		cudaMemcpy3DParms myParms = { 0 };
 		myParms.dstPtr = volume.getVolumeData().pitchedDevPtr;
-		myParms.srcPtr = make_cudaPitchedPtr(thrust::raw_pointer_cast(Czp.data()), P.x * sizeof(float), P.x * sizeof(float), P.y);
+		myParms.srcPtr = make_cudaPitchedPtr(memoryManager->Czp_data(), P.x * sizeof(float), P.x * sizeof(float), P.y);
 		myParms.extent = make_cudaExtent(volData.width_ * sizeof(float), volData.height_, volData.depth_);
 		myParms.srcPos = make_cudaPos((L.x*2)*sizeof(float), L.y*2, L.z*2);
 		myParms.kind = cudaMemcpyDeviceToDevice;
@@ -429,8 +376,7 @@ void KernelDensityEstimationCUDA::estimateBinned(Volume& volume, const KernelBan
 //				++idx;
 //			}
 //	
-	chkCudaErrors(cufftDestroy(forwardPlan));
-	chkCudaErrors(cufftDestroy(inversePlan));
+
 }
 
 #include "FFTLSCVEstimatorCUDA.h"
@@ -461,25 +407,42 @@ BoundingBox estimateBoundingBox(const float4* samples_device, int nsamples)
 	return result;
 }
 
-__global__ void fillLSCVKernelFilter(GPUVolumeData kernelFilterData)
+
+struct LSCVKernelFiller
 {
-	int idx = blockIdx.x*blockDim.x + threadIdx.x;
-	uint3 gridSize = kernelFilterData.gridSize();
-	if (idx >= gridSize.x*gridSize.y*gridSize.z) return;
-
-	int idx_x = idx % gridSize.x;
-	int idx_y = (idx / gridSize.x) % gridSize.y;
-	int idx_z = idx / (gridSize.y * gridSize.x);
-
-	float3 pos = make_float3(kernelFilterData.cellCenter(idx_x, idx_y, idx_z));
-
-	kernelFilterData(idx_x, idx_y, idx_z) = GaussianKernel(make_float4(pos,0.0), make_float4(0.0f,0.0f,0.0f,2.0f))- 2.0f*GaussianKernel(pos, make_float3(0.0f, 0.0f, 0.0f));
-
-}
+	__device__ float operator()(float3 pos)
+	{
+		return GaussianKernel(make_float4(pos, 0.0), make_float4(0.0f, 0.0f, 0.0f, 2.0f)) - 2.0f*GaussianKernel(pos, make_float3(0.0f, 0.0f, 0.0f));
+	}
+};
 
 #include "PitchedMemoryIterator.cuh"
 
-float FFTLSCVEstimatorCUDA::estimateLSCV(Volume& binned_volume,int nsamples,const KernelBandwidth& kernelBandwidth)
+FFTLSCVEstimatorCUDA::FFTLSCVEstimatorCUDA():
+	FFTKDEEstimationBaseCUDA()
+{
+}
+
+float FFTLSCVEstimatorCUDA::estimateLSCV(const Volume& binned_volume, int nsamples, const KernelBandwidth& kernelBandwidth)
+{
+	GPUVolumeData volData = binned_volume.getVolumeData();
+	float3 L_f = make_float3((3.7f*sqrtf(kernelBandwidth.getLargestEigenValue()))) / binned_volume.cellSize()* 2.0;
+	L_f = make_float3(ceilf(L_f.x), ceilf(L_f.y), ceilf(L_f.z));
+	int3 L = make_int3(L_f.x, L_f.y, L_f.z);
+
+	int3 P = make_int3(powf(2.0f, ceilf(log2f(L_f.x*2.0f + 1.0f + volData.width_))), powf(2.0f, ceilf(log2f(L_f.y*2.0f + 1.0f + volData.height_))), powf(2.0f, ceilf(log2f(L_f.z*2.0f + 1.0f + volData.depth_))));
+
+	estimateBinnedBase<LSCVKernelFiller>(volData, L, P, kernelBandwidth);
+
+	thrust_ext::PitchedMemoryIterator<float> pIt(make_cudaPitchedPtr(memoryManager->Czp_data(), sizeof(float)*P.x, sizeof(float)*P.x, P.y), make_cudaExtent(volData.width_, volData.height_, volData.depth_), make_cudaPos((L.x * 2), L.y * 2, L.z * 2));
+	thrust_ext::PitchedMemoryIterator<float> volDataIt(volData.pitchedDevPtr);
+	
+	thrust::transform(pIt, pIt + volData.width_*volData.height_*volData.depth_, volDataIt, pIt, thrust::placeholders::_1*thrust::placeholders::_2);
+	register float temp = thrust::reduce(pIt, pIt + volData.width_*volData.height_*volData.depth_, 0.0f);
+	return (temp / float(nsamples) + 2.0f*kernel_normalizing_constant_) / float(nsamples);
+}
+/*
+float FFTLSCVEstimatorCUDA::estimateLSCV(const Volume& binned_volume,int nsamples,const KernelBandwidth& kernelBandwidth)
 {
 	GPUVolumeData volData = binned_volume.getVolumeData();
 	float3 L_f = make_float3((3.7f*sqrtf(kernelBandwidth.getLargestEigenValue()))) / binned_volume.cellSize()* 2.0;
@@ -544,7 +507,7 @@ float FFTLSCVEstimatorCUDA::estimateLSCV(Volume& binned_volume,int nsamples,cons
 	launch_block_size = 512;
 	launch_grid_size = (FCzp.size() + launch_block_size - 1) / launch_block_size;
 
-	float fftScaleFactor_ = 1.0f / ((P.x*P.y*P.z)/*(P.x*P.y*P.z)*/);
+	float fftScaleFactor_ = 1.0f / ((P.x*P.y*P.z));
 	chkCudaErrors(cudaMemcpyToSymbol(fftScaleFactor, &fftScaleFactor_, sizeof(float)));
 
 	filterInFreqDomain <<< launch_grid_size, launch_block_size >>> (thrust::raw_pointer_cast(FCzp.data()), thrust::raw_pointer_cast(FKzp.data()), FCzp.size());
@@ -586,7 +549,7 @@ float FFTLSCVEstimatorCUDA::estimateLSCV(Volume& binned_volume,int nsamples,cons
 	//		for (int j = 0; j<volData.height_; ++j)
 	//			for (int i = 0; i < volData.width_; ++i)
 	//			{
-	//				float3 cellPos = (make_float3(float(i) + 0.5f, float(j) + 0.5f, float(k) + 0.5f)/*-make_float3((L.x)*2.0f,(L.y)*2.0f,(L.z)*2.0f)*/)*make_float3(volData.cellSize_) + make_float3(volData.minBB_);
+	//				float3 cellPos = (make_float3(float(i) + 0.5f, float(j) + 0.5f, float(k) + 0.5f))*make_float3(volData.cellSize_) + make_float3(volData.minBB_);
 	//				printf("%g,%g,%g,%g\n", cellPos.x, cellPos.y, cellPos.z, debug3[idx]* debug2[idx]);
 	//				
 	//				tmp_ += debug3[idx] *debug2[idx];
@@ -616,3 +579,5 @@ float FFTLSCVEstimatorCUDA::estimateLSCV(Volume& binned_volume,int nsamples,cons
 
 	return (temp / float(nsamples) + 2.0f*kernel_normalizing_constant_) / float(nsamples);
 }
+
+*/

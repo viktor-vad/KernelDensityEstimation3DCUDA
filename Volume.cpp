@@ -74,3 +74,18 @@ void Volume::copyFlattened(float* dst, cudaMemcpyKind kind) const
 
 	chkCudaErrors(cudaMemcpy3D(&myParms));
 }
+
+float Volume::valueAt(const int i, const int j, const int k) const
+{
+	float value;
+
+	cudaMemcpy3DParms myParms = { 0 };
+	myParms.srcPtr = pitchedDevPtr;
+	myParms.dstPtr = make_cudaPitchedPtr(&value, sizeof(float), sizeof(float), 1);
+	myParms.extent = make_cudaExtent(sizeof(float), 1, 1);
+	myParms.kind = cudaMemcpyDeviceToHost;
+	myParms.srcPos = make_cudaPos(i * sizeof(float), j, k);
+	chkCudaErrors(cudaMemcpy3D(&myParms));
+
+	return value;
+}

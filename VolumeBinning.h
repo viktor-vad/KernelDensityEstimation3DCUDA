@@ -6,5 +6,9 @@
 class VolumeBinningEstimator
 {
 public:
-	static void estimateBinnedVolume(Volume&,const float4* samples_device, int nsamples, bool linear = false);
+	template <typename CONST_SAMPLES_IT_TYPE>
+	static void estimateBinnedVolumeFromIterator(Volume&, CONST_SAMPLES_IT_TYPE samples_device, int nsamples, bool linear = false);
+
+	static void estimateBinnedVolume(Volume& volume, const float4* __restrict__ samples_device, int nsamples, bool linear = false);
+
 };

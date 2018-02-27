@@ -64,11 +64,16 @@ public:
 	{
 		return make_float3(cellSize_.x, cellSize_.y, cellSize_.z);
 	}
-
+	inline float4 cellCenter(const int i, const int j, const int k) const
+	{
+		return make_float4(float(i) + 0.5f, float(j) + 0.5f, float(k) + 0.5f, 0.0)*cellSize_ + BB_.lower;
+	}
 	inline unsigned int numberOfCells() const
 	{
 		return width_*height_*depth_;
 	}
+
+	float valueAt(const int i, const int j, const int k) const;
 
 	void fillWithZeros();
 	
